@@ -1,0 +1,38 @@
+[cerebrium.deployment]
+name = "api-testing"
+python_version = "3.12"
+docker_base_image_url = "debian:bookworm-slim"
+include = ["*.py", "requirements.txt", "*.pt"]
+exclude = [".git/*", "__pycache__/*", "*.pyc", ".venv/"]
+
+[cerebrium.hardware]
+# T4 is plenty for a single YOLOv8 model at 1024x1024; bump to AMPERE_A10
+# if inference feels slow or you batch multiple videos at once.
+gpu = "T4"
+cpu = 4
+memory = 16.0
+
+[cerebrium.scaling]
+min_replicas = 0
+max_replicas = 3
+cooldown = 60
+# Video jobs can run long - this must exceed the longest video you expect
+# to process, or Cerebrium will kill the container mid-job.
+response_grace_period = 1800
+
+[cerebrium.dependencies.pip]
+# left empty on purpose - all Python deps are declared in requirements.txt
+
+[cerebrium.dependencies.apt]
+# ultralytics pulls in plain opencv-python (not just opencv-python-headless)
+# as one of its own dependencies, and it overwrites the headless build at
+# install time. Rather than fight pip's install order, just give the
+# container the X11/GL libs that build needs so it runs either way.
+libgl1 = "latest"
+"libglib2.0-0" = "latest"
+libsm6 = "latest"
+libxext6 = "latest"
+libxrender1 = "latest"
+libxcb1 = "latest"
+libx11-6 = "latest"
+

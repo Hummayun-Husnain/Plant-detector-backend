@@ -1,0 +1,11 @@
+# Pinned: torch (pulled in by ultralytics) requires setuptools>=77.0.3, but
+# newer setuptools versions drop pkg_resources, which Cerebrium's own server
+# (OpenTelemetry instrumentation) still depends on at startup. Pinning to
+# the minimum satisfies torch without upgrading past the pkg_resources cutoff.
+setuptools==77.0.3
+
+ultralytics
+deep-sort-realtime
+opencv-python-headless
+tqdm
+boto3
