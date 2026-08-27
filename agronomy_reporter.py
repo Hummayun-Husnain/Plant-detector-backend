@@ -18,7 +18,7 @@ from pdf_generator import create_pdf
 from s3_utils import upload_file, generate_presigned_url
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-GROQ_MODEL = os.environ.get("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
+GROQ_MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 
 
 class AgronomicInsights(BaseModel):
