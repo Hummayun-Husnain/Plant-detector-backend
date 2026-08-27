@@ -35,4 +35,6 @@ libxext6 = "latest"
 libxrender1 = "latest"
 libxcb1 = "latest"
 libx11-6 = "latest"
+# FFmpeg for reliable MP4 encoding with H.264 codec
+ffmpeg = "latest"
 

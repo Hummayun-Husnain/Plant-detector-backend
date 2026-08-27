@@ -6,6 +6,7 @@ Adapted from the original count_plants.py.
 
 import math
 import os
+import subprocess
 import time
 from datetime import timedelta
 
@@ -48,6 +49,37 @@ def _get_model():
 
 def _format_duration(seconds: float) -> str:
     return str(timedelta(seconds=int(seconds))) or "00:00:00"
+
+
+def _convert_to_mp4_ffmpeg(input_path: str, output_path: str) -> bool:
+    """
+    Convert video to MP4 using FFmpeg with H.264 codec for maximum browser compatibility.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        print(f"[ffmpeg] Converting {input_path} to MP4 with H.264 codec...", flush=True)
+        cmd = [
+            "ffmpeg",
+            "-i", input_path,
+            "-c:v", "libx264",  # H.264 video codec
+            "-preset", "fast",  # Encoding speed (fast is good for real-time)
+            "-crf", "23",  # Quality (0-51, lower is better, 23 is default)
+            "-c:a", "aac",  # AAC audio codec
+            "-b:a", "128k",  # Audio bitrate
+            "-movflags", "+faststart",  # Enable streaming from the start
+            "-y",  # Overwrite output file
+            output_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode == 0:
+            print(f"[ffmpeg] Successfully converted to MP4", flush=True)
+            return True
+        else:
+            print(f"[ffmpeg] Conversion failed: {result.stderr}", flush=True)
+            return False
+    except Exception as e:
+        print(f"[ffmpeg] Error during conversion: {e}", flush=True)
+        return False
 
 
 def run_inference(input_path: str, output_path: str, config: dict | None = None) -> dict:
@@ -157,6 +189,26 @@ def run_inference(input_path: str, output_path: str, config: dict | None = None)
     pbar.close()
     cap.release()
     writer.release()
+
+    # Convert to MP4 using FFmpeg for maximum browser compatibility
+    # This ensures H.264 codec and proper streaming support
+    temp_output = output_path + ".tmp.mp4"
+    if os.path.exists(output_path):
+        os.rename(output_path, temp_output)
+        if _convert_to_mp4_ffmpeg(temp_output, output_path):
+            try:
+                os.remove(temp_output)
+            except Exception as e:
+                print(f"[inference] Failed to clean up temp file: {e}", flush=True)
+        else:
+            # If FFmpeg conversion fails, try to use the original file
+            print("[inference] FFmpeg conversion failed, attempting to use original output", flush=True)
+            if os.path.exists(temp_output):
+                try:
+                    os.remove(output_path)
+                    os.rename(temp_output, output_path)
+                except Exception as e:
+                    print(f"[inference] Failed to restore temp file: {e}", flush=True)
 
     processing_time = time.time() - start_time
     average_fps = frames_processed / processing_time if processing_time > 0 else 0.0

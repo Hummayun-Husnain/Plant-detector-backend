@@ -9,3 +9,7 @@ deep-sort-realtime
 opencv-python-headless
 tqdm
 boto3
+ffmpeg-python
+groq
+reportlab
+pydantic

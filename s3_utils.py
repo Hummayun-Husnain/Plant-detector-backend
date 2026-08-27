@@ -15,6 +15,7 @@ generated here, so the frontend and backend always agree on where a file
 lives.
 """
 
+import json
 import os
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
@@ -76,3 +77,70 @@ def upload_bytes(data: bytes, s3_key: str, content_type: str = "application/json
     except ClientError as e:
         print(f"[s3_utils] upload_bytes failed for {s3_key}: {e}")
         raise
+
+
+def generate_presigned_url(
+    s3_key: str,
+    method: str = "get_object",
+    expiration: int = 900,
+    content_disposition: str | None = None,
+    content_type: str | None = None,
+) -> str:
+    s3 = get_client()
+    try:
+        params = {"Bucket": BUCKET_NAME, "Key": s3_key}
+        if content_disposition:
+            params["ResponseContentDisposition"] = content_disposition
+        if content_type:
+            params["ResponseContentType"] = content_type
+        return s3.generate_presigned_url(
+            ClientMethod=method,
+            Params=params,
+            ExpiresIn=expiration,
+        )
+    except ClientError as e:
+        print(f"[s3_utils] generate_presigned_url failed for {s3_key}: {e}")
+        raise
+
+
+def object_exists(s3_key: str) -> bool:
+    s3 = get_client()
+    try:
+        s3.head_object(Bucket=BUCKET_NAME, Key=s3_key)
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "404":
+            return False
+        raise
+
+
+def get_json_object(s3_key: str) -> dict:
+    s3 = get_client()
+    try:
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=s3_key)
+        return json.loads(obj["Body"].read().decode("utf-8"))
+    except ClientError as e:
+        print(f"[s3_utils] get_json_object failed for {s3_key}: {e}")
+        raise
+
+
+def list_job_keys(prefix: str = "outputs/", max_keys: int = 100) -> list:
+    s3 = get_client()
+    try:
+        res = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix=prefix, MaxKeys=max_keys)
+        return [
+            obj["Key"]
+            for obj in res.get("Contents", [])
+            if obj["Key"].endswith(".json") and "/annotated/" not in obj["Key"]
+        ]
+    except ClientError as e:
+        print(f"[s3_utils] list_job_keys failed: {e}")
+        raise
+
+
+def get_public_url(s3_key: str) -> str:
+    """
+    Generate a public URL for an S3 object.
+    The object must have public read permissions in the bucket policy.
+    """
+    return f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
