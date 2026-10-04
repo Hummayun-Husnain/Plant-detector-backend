@@ -10,6 +10,6 @@ opencv-python-headless
 tqdm
 boto3
 ffmpeg-python
-groq
+google-genai>=2.0.0
 reportlab
 pydantic

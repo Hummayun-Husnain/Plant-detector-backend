@@ -1,24 +1,23 @@
-"""Agronomic reporting pipeline: keyframe extraction, Groq Vision, PDF, S3."""
+"""Agronomic reporting pipeline: keyframe extraction, Gemini Vision, PDF, S3."""
 
-import base64
 import io
 import json
 import os
 import shutil
 import tempfile
-from datetime import datetime
 from typing import List
 
 import cv2
-from groq import Groq
+from google import genai
+from google.genai import types
 from PIL import Image
 from pydantic import BaseModel, Field
 
 from pdf_generator import create_pdf
 from s3_utils import upload_file, generate_presigned_url
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-GROQ_MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_MODEL = os.environ.get("GEMINI_VISION_MODEL", "gemini-3.5-flash")
 
 
 class AgronomicInsights(BaseModel):
@@ -46,7 +45,11 @@ DEFAULT_INSIGHTS = {
 
 
 SYSTEM_PROMPT = (
-    "You are an expert agricultural nutritionist and agronomist. Based on these representative plant images and the detected plant count, provide structured and actionable insights about plant health, growth, possible nutrient deficiencies, stress indicators, disease/pest signs, and recommendations."
+    "You are a senior agronomist writing a client-facing field report. "
+    "Base every statement on what is visible in the keyframes and on the detected plant count. "
+    "Separate what you can see from what you infer. Use precise agronomic language, "
+    "explain it in plain words, and say so when the frames are not enough to judge. "
+    "Write in a calm, professional third person. No markdown, no bullet characters, no filler."
 )
 
 
@@ -78,20 +81,21 @@ def extract_keyframes(video_path: str, num_frames: int = 5) -> List[Image.Image]
     return frames
 
 
-def _pil_to_base64(img: Image.Image, quality: int = 85) -> str:
+def _pil_to_jpeg_bytes(img: Image.Image, quality: int = 85) -> bytes:
     rgb = img.convert("RGB")
-    rgb.thumbnail((1024, 1024), Image.LANCZOS)
+    rgb.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
     buffer = io.BytesIO()
     rgb.save(buffer, format="JPEG", quality=quality)
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return buffer.getvalue()
 
 
-def _build_messages(images_b64: List[str], plant_count: int):
+def _build_contents(images_jpeg: List[bytes], plant_count: int) -> List[types.Content]:
     user_text = (
         f"Total detected plant count: {plant_count}.\n\n"
-        "Analyze the attached video keyframes and return a single JSON object "
-        "with exactly the following five keys. Each value must be a detailed "
-        "descriptive paragraph suitable for a professional agronomic PDF report.\n\n"
+        "These keyframes are in chronological order and are the only visual evidence for this report. "
+        "Return a single JSON object with exactly the following five keys. "
+        "Each value must be a full paragraph of 4 to 6 sentences, specific to these frames, "
+        "and ready to print in a professional agronomic report.\n\n"
         "Required JSON schema:\n"
         '{\n'
         '  "executive_summary": "Concise high-level agronomic overview and key takeaways.",\n'
@@ -103,40 +107,37 @@ def _build_messages(images_b64: List[str], plant_count: int):
         "Do not include any text outside the JSON object."
     )
 
-    image_parts = [
-        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-        for b64 in images_b64
-    ]
-
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": [{"type": "text", "text": user_text}] + image_parts,
-        },
-    ]
+    parts = [types.Part.from_text(text=user_text)]
+    parts += [types.Part.from_bytes(data=b, mime_type="image/jpeg") for b in images_jpeg]
+    return [types.Content(role="user", parts=parts)]
 
 
-def call_groq_vision(images: List[Image.Image], plant_count: int) -> dict:
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not set.")
+def call_gemini_vision(images: List[Image.Image], plant_count: int) -> dict:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not set.")
 
-    client = Groq(api_key=GROQ_API_KEY)
-    images_b64 = [_pil_to_base64(img) for img in images]
-    messages = _build_messages(images_b64, plant_count)
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    images_jpeg = [_pil_to_jpeg_bytes(img) for img in images]
+    contents = _build_contents(images_jpeg, plant_count)
 
-    response = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=messages,
-        response_format={"type": "json_object"},
-        temperature=0.2,
-        max_completion_tokens=2048,
+    # Medium thinking is the quality setting for a written assessment.
+    # The token cap includes thinking, so leave room for the five paragraphs.
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            response_json_schema=AgronomicInsights.model_json_schema(),
+            thinking_config=types.ThinkingConfig(thinking_level="medium"),
+            max_output_tokens=8192,
+        ),
     )
 
-    content = response.choices[0].message.content
-    print(f"[agronomy_reporter] Groq raw response: {content[:500]}", flush=True)
+    content = response.text
+    print(f"[agronomy_reporter] Gemini raw response: {(content or '')[:500]}", flush=True)
     if not content:
-        raise RuntimeError("Groq returned empty content.")
+        raise RuntimeError("Gemini returned empty content.")
 
     data = json.loads(content)
     insights = AgronomicInsights(**data)
@@ -166,10 +167,10 @@ def generate_agronomic_report(
         raise RuntimeError(f"No keyframes could be extracted from {video_path}")
 
     try:
-        insights = call_groq_vision(keyframes, plant_count)
+        insights = call_gemini_vision(keyframes, plant_count)
         processing_status = "done"
     except Exception as e:
-        print(f"[agronomy_reporter] Groq Vision failed: {e}", flush=True)
+        print(f"[agronomy_reporter] Gemini Vision failed: {e}", flush=True)
         insights = dict(DEFAULT_INSIGHTS)
         processing_status = "report_failed"
 

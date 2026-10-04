@@ -84,16 +84,27 @@ def _run_pipeline(input_key: str, output_key: str, meta_key: str, config: dict) 
 
             print("[predict] starting run_inference...", flush=True)
 
+            def _on_progress(event: dict) -> None:
+                _write_job_progress(job_id, event)
+
             result = run_inference(
                 local_input,
                 local_output,
                 config=config,
+                on_progress=_on_progress,
             )
 
             print("[predict] run_inference completed", flush=True)
             print(f"[predict] result={result}", flush=True)
 
             print("[predict] generating agronomic report...", flush=True)
+            _write_job_progress(job_id, {
+                "stage": "report",
+                "frames_processed": (result.get("metrics") or {}).get("frames_processed") or 0,
+                "total_frames": (result.get("metrics") or {}).get("frames_processed") or 0,
+                "count": result.get("count") or 0,
+                "average_processing_fps": (result.get("metrics") or {}).get("average_processing_fps") or 0,
+            })
             report = {}
             try:
                 report = generate_agronomic_report(
@@ -231,6 +242,54 @@ def _handle_upload(
         return _run_pipeline(input_key, output_key, meta_key, config)
 
 
+def _progress_key(job_id: str) -> str:
+    return f"outputs/{job_id}.progress.json"
+
+
+def _write_job_progress(job_id: str, event: dict) -> None:
+    """Publish live analysis progress. A failure here must not fail the job."""
+    payload = {
+        "status": "processing",
+        "job_id": job_id,
+        "stage": event.get("stage") or "counting",
+        "frames_processed": int(event.get("frames_processed") or 0),
+        "total_frames": int(event.get("total_frames") or 0),
+        "count": int(event.get("count") or 0),
+        "average_processing_fps": event.get("average_processing_fps") or 0,
+    }
+    try:
+        upload_bytes(json.dumps(payload).encode("utf-8"), _progress_key(job_id))
+    except Exception as e:
+        print(f"[predict] progress write failed: {e}", flush=True)
+
+
+def _processing_status(job_id: str) -> dict:
+    """Status while the final metadata file does not exist yet.
+
+    Frame counts come from the progress file the inference loop writes, so
+    the frontend can fill the analysis slice (10–90%) from real frames.
+    """
+    progress_key = _progress_key(job_id)
+    try:
+        if not object_exists(progress_key):
+            return {"status": "processing"}
+        progress = get_json_object(progress_key)
+    except Exception as e:
+        print(f"[status] progress read failed: {e}", flush=True)
+        return {"status": "processing"}
+
+    return {
+        "status": "processing",
+        "count": progress.get("count") or 0,
+        "metrics": {
+            "frames_processed": progress.get("frames_processed") or 0,
+            "total_frames": progress.get("total_frames") or 0,
+            "average_processing_fps": progress.get("average_processing_fps") or 0,
+            "stage": progress.get("stage") or "counting",
+        },
+    }
+
+
 def _status(job_id: str) -> dict:
     if not job_id:
         raise ValueError("job_id is required")
@@ -241,7 +300,7 @@ def _status(job_id: str) -> dict:
 
     exists = object_exists(meta_key)
     if not exists:
-        return {"status": "processing"}
+        return _processing_status(job_id)
 
     meta = get_json_object(meta_key)
 

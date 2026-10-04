@@ -82,7 +82,12 @@ def _convert_to_mp4_ffmpeg(input_path: str, output_path: str) -> bool:
         return False
 
 
-def run_inference(input_path: str, output_path: str, config: dict | None = None) -> dict:
+def run_inference(
+    input_path: str,
+    output_path: str,
+    config: dict | None = None,
+    on_progress=None,
+) -> dict:
     """
     Run YOLO + DeepSORT plant counting on input_path, write an annotated
     video to output_path, and return full instrumentation metrics.
@@ -113,7 +118,35 @@ def run_inference(input_path: str, output_path: str, config: dict | None = None)
     all_detections = 0
     confidences = []
     frames_processed = 0
+    last_progress_at = 0.0
     pbar = tqdm.tqdm(total=frame_count)
+
+    def _emit_progress(stage: str, force: bool = False) -> None:
+        """Tell the caller how far counting has got. Throttled so a long
+        video does not write a status update on every frame."""
+        nonlocal last_progress_at
+        if on_progress is None:
+            return
+        now = time.time()
+        if not force and (now - last_progress_at) < 2.0:
+            return
+        last_progress_at = now
+        elapsed = now - start_time
+        # Unknown length stays 0 while counting, so the page keeps its slow
+        # fallback instead of treating every frame as "finished".
+        total = frame_count
+        if stage != "counting" and total <= 0:
+            total = frames_processed
+        try:
+            on_progress({
+                "stage": stage,
+                "frames_processed": frames_processed,
+                "total_frames": total,
+                "count": len(crossed_ids),
+                "average_processing_fps": round(frames_processed / elapsed, 2) if elapsed > 0 else 0.0,
+            })
+        except Exception as e:
+            print(f"[inference] progress callback failed: {e}", flush=True)
 
     x1, y1 = map(int, line[0])
     x2, y2 = map(int, line[1])
@@ -185,8 +218,10 @@ def run_inference(input_path: str, output_path: str, config: dict | None = None)
 
         writer.write(img)
         pbar.update(1)
+        _emit_progress("counting", force=(frame_count > 0 and frames_processed >= frame_count))
 
     pbar.close()
+    _emit_progress("encoding", force=True)
     cap.release()
     writer.release()
 
