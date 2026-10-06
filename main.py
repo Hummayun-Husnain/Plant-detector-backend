@@ -112,7 +112,11 @@ def _run_pipeline(input_key: str, output_key: str, meta_key: str, config: dict) 
                 )
                 print("[predict] agronomic report generated", flush=True)
             except Exception as report_err:
-                print(f"[predict] agronomic report error: {report_err}", flush=True)
+                print(f"[predict] agronomic report error: {type(report_err).__name__}: {report_err}", flush=True)
+                print(traceback.format_exc(), flush=True)
+                report = {"processing_status": "report_failed"}
+            if not report.get("report_url"):
+                print("[predict] WARNING: no pdf_report_url for this job", flush=True)
 
             print("[predict] uploading output...", flush=True)
 

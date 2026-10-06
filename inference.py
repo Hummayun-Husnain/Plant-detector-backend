@@ -19,7 +19,13 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 CLASS_NAMES = ["plant"]
 FRAME_SIZE = (1024, 1024)
-DEFAULT_LINE = [[0, 900], [1024, 900]]
+# Full-width line through the middle of the (1024x1024) frame. Every plant
+# that travels through the video passes this line; the old y=900 line sat at
+# the bottom edge where plants were often already out of frame.
+DEFAULT_LINE = [[0, 512], [1024, 512]]
+# Minimum half-height of the counting band in pixels. The band grows with the
+# plant's box so a large plant moving fast cannot jump over it between frames.
+MIN_BAND_HALF_HEIGHT = 15
 CONF_THRESHOLD = 0.3
 
 TRACKER_CONFIG = {
@@ -49,6 +55,22 @@ def _get_model():
 
 def _format_duration(seconds: float) -> str:
     return str(timedelta(seconds=int(seconds))) or "00:00:00"
+
+
+def _resolve_counting_line(cfg: dict) -> list:
+    """Pixel line used for the band check.
+
+    The app sends `lineCoordinates` as fractions of the frame, for example
+    [[0.25, 0.5], [0.75, 0.5]]. Values already in pixels are left as they are.
+    """
+    raw = cfg.get("line_coordinates") or cfg.get("lineCoordinates") or DEFAULT_LINE
+    (x1, y1), (x2, y2) = raw
+    x1, y1, x2, y2 = float(x1), float(y1), float(x2), float(y2)
+    if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.0:
+        width, height = FRAME_SIZE
+        x1, x2 = x1 * width, x2 * width
+        y1, y2 = y1 * height, y2 * height
+    return [[x1, y1], [x2, y2]]
 
 
 def _convert_to_mp4_ffmpeg(input_path: str, output_path: str) -> bool:
@@ -93,7 +115,7 @@ def run_inference(
     video to output_path, and return full instrumentation metrics.
     """
     cfg = config or {}
-    line = cfg.get("line_coordinates") or DEFAULT_LINE
+    line = _resolve_counting_line(cfg)
     direction = cfg.get("direction") or "bidirectional"
     ground_truth = int(cfg.get("ground_truth_count") or 0)
     model_version = cfg.get("modelVersion") or os.environ.get("MODEL_VERSION") or "plant-counter-model"
@@ -190,7 +212,10 @@ def run_inference(
             w, h = tx2 - tx1, ty2 - ty1
             cx, cy = tx1 + w // 2, ty1 + h // 2
 
-            crossed = x1 < cx < x2 and y1 - 15 < cy < y2 + 15
+            # A plant is "on the line" when the line passes through its box
+            # (at least a 30px band for very small plants).
+            band = max(MIN_BAND_HALF_HEIGHT, h // 2)
+            crossed = x1 <= cx <= x2 and y1 - band < cy < y2 + band
             if crossed and track_id not in crossed_ids:
                 crossed_ids.add(track_id)
 
